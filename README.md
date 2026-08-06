@@ -1,61 +1,356 @@
-# Three-Tier Web Application Deployment on AWS EKS using AWS EKS, ArgoCD, Prometheus, Grafana, and Jenkins
-[![LinkedIn](https://img.shields.io/badge/Connect%20with%20me%20on-LinkedIn-blue.svg)](https://www.linkedin.com/in/aman-devops/)
-[![Discord](https://img.shields.io/badge/Discord-7289DA?style=for-the-badge&logo=discord&logoColor=white)](https://discord.com/invite/jdzF8kTtw2)
-[![Medium](https://img.shields.io/badge/Medium-12100E?style=for-the-badge&logo=medium&logoColor=white)](https://medium.com/@amanpathakdevops)
-[![GitHub](https://img.shields.io/github/stars/AmanPathak-DevOps.svg?style=social)](https://github.com/AmanPathak-DevOps)
-[![AWS](https://img.shields.io/badge/AWS-%F0%9F%9B%A1-orange)](https://aws.amazon.com)
-[![Terraform](https://img.shields.io/badge/Terraform-%E2%9C%A8-lightgrey)](https://www.terraform.io)
+# 🚀 End-to-End DevSecOps Three-Tier Application Deployment on AWS EKS
 
-![Three-Tier Banner](assets/Three-tier-arch.jpeg)
+![AWS](https://img.shields.io/badge/AWS-EKS-orange?logo=amazonaws)
+![Terraform](https://img.shields.io/badge/Terraform-623CE4?logo=terraform)
+![GitHub Actions](https://img.shields.io/badge/GitHub-Actions-2088FF?logo=githubactions)
+![Docker](https://img.shields.io/badge/Docker-2496ED?logo=docker)
+![Kubernetes](https://img.shields.io/badge/Kubernetes-326CE5?logo=kubernetes)
+![ArgoCD](https://img.shields.io/badge/ArgoCD-EF7B4D?logo=argo)
+![Prometheus](https://img.shields.io/badge/Prometheus-E6522C?logo=prometheus)
+![Grafana](https://img.shields.io/badge/Grafana-F46800?logo=grafana)
+![License](https://img.shields.io/badge/License-MIT-green)
 
-Welcome to the Three-Tier Web Application Deployment project! 🚀
+## 📖 Project Overview
 
-This repository hosts the implementation of a Three-Tier Web App using ReactJS, NodeJS, and MongoDB, deployed on AWS EKS. The project covers a wide range of tools and practices for a robust and scalable DevOps setup.
+This project demonstrates a complete **Enterprise DevSecOps CI/CD pipeline** for deploying a **Three-Tier Web Application** on **Amazon EKS** using modern cloud-native technologies.
 
-## Table of Contents
-- [Application Code](#application-code)
-- [Jenkins Pipeline Code](#jenkins-pipeline-code)
-- [Jenkins Server Terraform](#jenkins-server-terraform)
-- [Kubernetes Manifests Files](#kubernetes-manifests-files)
-- [Project Details](#project-details)
+The application consists of:
 
-## Application Code
-The `Application-Code` directory contains the source code for the Three-Tier Web Application. Dive into this directory to explore the frontend and backend implementations.
+* 🎨 Frontend – ReactJS
+* ⚙️ Backend – NodeJS (Express)
+* 🗄️ Database – MongoDB
 
-## Jenkins Pipeline Code
-In the `Jenkins-Pipeline-Code` directory, you'll find Jenkins pipeline scripts. These scripts automate the CI/CD process, ensuring smooth integration and deployment of your application.
+The infrastructure is provisioned using **Terraform**, containerized with **Docker**, deployed to **Amazon EKS**, managed through **GitOps with ArgoCD**, and monitored using **Prometheus** and **Grafana**.
 
-## Jenkins Server Terraform
-Explore the `Jenkins-Server-TF` directory to find Terraform scripts for setting up the Jenkins Server on AWS. These scripts simplify the infrastructure provisioning process.
+---
 
-## Kubernetes Manifests Files
-The `Kubernetes-Manifests-Files` directory holds Kubernetes manifests for deploying your application on AWS EKS. Understand and customize these files to suit your project needs.
+# 🏗️ Architecture
 
-## Project Details
-🛠️ **Tools Explored:**
-- Terraform & AWS CLI for AWS infrastructure
-- Jenkins, Sonarqube, Terraform, Kubectl, and more for CI/CD setup
-- Helm, Prometheus, and Grafana for Monitoring
-- ArgoCD for GitOps practices
+```
+Developer
+      │
+      ▼
+GitHub Repository
+      │
+      ▼
+GitHub Actions CI Pipeline
+      │
+      ├── Checkout Source
+      ├── Build Application
+      ├── Unit Tests
+      ├── SonarQube Analysis
+      ├── Quality Gate
+      ├── OWASP Dependency Check
+      ├── Trivy File Scan
+      ├── Docker Build
+      ├── Trivy Image Scan
+      ├── Push Image to Amazon ECR
+      ▼
+Update Kubernetes Manifests
+      │
+      ▼
+GitHub (GitOps Repository)
+      │
+      ▼
+ArgoCD
+      │
+      ▼
+Amazon EKS Cluster
+      │
+      ▼
+Frontend → Backend → MongoDB
+      │
+      ▼
+Prometheus + Grafana Monitoring
+```
 
-🚢 **High-Level Overview:**
-- IAM User setup & Terraform magic on AWS
-- Jenkins deployment with AWS integration
-- EKS Cluster creation & Load Balancer configuration
-- Private ECR repositories for secure image management
-- Helm charts for efficient monitoring setup
-- GitOps with ArgoCD - the cherry on top!
+---
 
-📈 **The journey covered everything from setting up tools to deploying a Three-Tier app, ensuring data persistence, and implementing CI/CD pipelines.**
+# ☁️ AWS Services Used
 
-## Getting Started
-To get started with this project, refer to our [comprehensive guide](https://amanpathakdevops.medium.com/advanced-end-to-end-devsecops-kubernetes-three-tier-project-using-aws-eks-argocd-prometheus-fbbfdb956d1a) that walks you through IAM user setup, infrastructure provisioning, CI/CD pipeline configuration, EKS cluster creation, and more.
+* Amazon EKS
+* Amazon ECR
+* EC2
+* IAM
+* VPC
+* Security Groups
+* CloudWatch
+* Load Balancer
+* Route Tables
+* Internet Gateway
 
-## Contributing
-We welcome contributions! If you have ideas for enhancements or find any issues, please open a pull request or file an issue.
+---
 
-## License
-This project is licensed under the [MIT License](LICENSE).
+# 🛠️ Technologies Used
 
-Happy Coding! 🚀
-# DevOps-End-to-End-Kubernetes-Three-Tier-Project
+| Category           | Tools                                    |
+| ------------------ | ---------------------------------------- |
+| Cloud              | AWS                                      |
+| Infrastructure     | Terraform                                |
+| CI/CD              | GitHub Actions                           |
+| Containerization   | Docker                                   |
+| Container Registry | Amazon ECR                               |
+| Orchestration      | Kubernetes (EKS)                         |
+| GitOps             | ArgoCD                                   |
+| Package Manager    | Helm                                     |
+| Monitoring         | Prometheus                               |
+| Visualization      | Grafana                                  |
+| Security           | Trivy, OWASP Dependency Check, SonarQube |
+| Backend            | NodeJS                                   |
+| Frontend           | ReactJS                                  |
+| Database           | MongoDB                                  |
+
+---
+
+# 📁 Repository Structure
+
+```
+DevOps-End-to-End-Kubernetes-Three-Tier-Project
+│
+├── Application-Code
+│   ├── frontend
+│   ├── backend
+│   └── database
+│
+├── Terraform
+│   ├── VPC
+│   ├── EKS
+│   ├── IAM
+│   └── Networking
+│
+├── GitHub-Actions
+│   └── workflow.yml
+│
+├── Kubernetes-Manifests
+│   ├── frontend
+│   ├── backend
+│   ├── mongodb
+│   ├── ingress
+│   ├── configmap
+│   └── secrets
+│
+├── Helm
+│
+├── Monitoring
+│   ├── Prometheus
+│   └── Grafana
+│
+├── ArgoCD
+│
+└── README.md
+```
+
+---
+
+# ⚙️ CI/CD Pipeline
+
+The GitHub Actions workflow automates the complete software delivery lifecycle.
+
+### Pipeline Stages
+
+* Checkout Source Code
+* Setup Java
+* Restore Maven Cache
+* Build Application
+* Execute Unit Tests
+* SonarQube Code Analysis
+* Sonar Quality Gate
+* OWASP Dependency Check
+* Trivy Filesystem Scan
+* Docker Image Build
+* Trivy Image Scan
+* Authenticate with Amazon ECR
+* Push Docker Image
+* Update Kubernetes Manifest
+* Commit Image Tag
+* ArgoCD Auto Sync
+* Deploy to Amazon EKS
+
+---
+
+# 🔐 DevSecOps Implementation
+
+The pipeline integrates security checks at multiple stages.
+
+✔ SonarQube Static Code Analysis
+
+✔ Sonar Quality Gate
+
+✔ OWASP Dependency Check
+
+✔ Trivy Filesystem Scan
+
+✔ Trivy Docker Image Scan
+
+✔ Secure Image Storage in Amazon ECR
+
+---
+
+# 🚀 Infrastructure Provisioning
+
+Infrastructure is created using reusable Terraform modules.
+
+Resources Provisioned
+
+* VPC
+* Public & Private Subnets
+* Internet Gateway
+* NAT Gateway
+* Route Tables
+* IAM Roles
+* Security Groups
+* Amazon EKS Cluster
+* Managed Node Groups
+
+---
+
+# ☸️ Kubernetes Deployment
+
+Application components deployed:
+
+* Frontend Deployment
+* Backend Deployment
+* MongoDB StatefulSet
+* Services
+* Ingress
+* ConfigMaps
+* Secrets
+* Persistent Volume Claims
+
+---
+
+# 🔄 GitOps Workflow
+
+```
+Developer
+
+     │
+
+Git Push
+
+     │
+
+GitHub Actions
+
+     │
+
+Build + Test + Scan
+
+     │
+
+Docker Build
+
+     │
+
+Push to Amazon ECR
+
+     │
+
+Update Kubernetes YAML
+
+     │
+
+Push Changes
+
+     │
+
+ArgoCD Detects Change
+
+     │
+
+Automatic Sync
+
+     │
+
+Amazon EKS Deployment
+```
+
+---
+
+# 📊 Monitoring & Observability
+
+Monitoring stack includes:
+
+* Prometheus for Metrics Collection
+* Grafana Dashboards
+* Kubernetes Cluster Monitoring
+* Node Exporter
+* kube-state-metrics
+* Application Health Monitoring
+
+Metrics monitored include:
+
+* CPU Usage
+* Memory Usage
+* Disk Usage
+* Pod Status
+* Node Status
+* Network Traffic
+* Container Restarts
+
+---
+
+# 📸 Project Screenshots
+
+Add screenshots here.
+
+```
+images/
+
+├── architecture.png
+
+├── github-actions.png
+
+├── argocd.png
+
+├── grafana-dashboard.png
+
+├── prometheus.png
+
+├── eks-nodes.png
+
+└── application.png
+```
+
+---
+
+# 🎯 Learning Outcomes
+
+This project demonstrates practical experience with:
+
+* Infrastructure as Code (Terraform)
+* GitHub Actions CI/CD
+* Docker Image Management
+* Amazon EKS
+* Kubernetes Workloads
+* GitOps using ArgoCD
+* DevSecOps Best Practices
+* Container Security
+* Monitoring & Observability
+* Cloud Infrastructure Automation
+
+---
+
+# 📌 Future Enhancements
+
+* Blue/Green Deployment
+* Canary Deployment
+* Horizontal Pod Autoscaler
+* Cluster Autoscaler
+* AWS Load Balancer Controller
+* External Secrets Operator
+* OpenTelemetry
+* Loki & Tempo Integration
+* KEDA Event-Driven Autoscaling
+
+---
+
+# 👨‍💻 Author
+
+**Darshan T**
+
+Associate DevOps Engineer
+
+**Tech Stack:** AWS | Kubernetes | Docker | Terraform | GitHub Actions | ArgoCD | Helm | Prometheus | Grafana | Linux | DevSecOps
+
+If you found this project useful, consider giving it a ⭐ on GitHub.
