@@ -10,7 +10,7 @@
 ![Grafana](https://img.shields.io/badge/Grafana-F46800?logo=grafana)
 ![License](https://img.shields.io/badge/License-MIT-green)
 
-![Architecture](assets/architecturegithubactions.jpeg)
+![Architecture](assets/Three-tier-arch.jpeg)
 
 
 ## 📖 Project Overview
