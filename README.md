@@ -10,6 +10,9 @@
 ![Grafana](https://img.shields.io/badge/Grafana-F46800?logo=grafana)
 ![License](https://img.shields.io/badge/License-MIT-green)
 
+![Architecture](assets/architecturegithubactions.jpeg)
+
+
 ## 📖 Project Overview
 
 This project demonstrates a complete **Enterprise DevSecOps CI/CD pipeline** for deploying a **Three-Tier Web Application** on **Amazon EKS** using modern cloud-native technologies.
