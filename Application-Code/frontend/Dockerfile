@@ -1,4 +1,3 @@
-
 # Stage 1 - Build
 FROM node:14 AS builder
 
