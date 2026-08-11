@@ -1,0 +1,139 @@
+name: Three-Tier Backend CI/CD
+
+on:
+  push:
+    branches:
+      - master
+  pull_request:
+    branches:
+      - master
+
+env:
+  AWS_REGION: us-east-1
+  ECR_REPOSITORY: three-tier-backend
+  IMAGE_TAG: ${{ github.sha }}
+
+jobs:
+
+  build-scan-push:
+
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: write
+      id-token: write
+
+    steps:
+
+      # 1. Checkout
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      # 2. Setup Java
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: maven
+
+      # 3. Setup Node.js
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      # 4. SonarQube
+      - name: SonarQube Analysis
+        working-directory: Application-Code/backend
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
+        run: |
+          mvn clean verify sonar:sonar \
+            -Dsonar.projectKey=three-tier-backend \
+            -Dsonar.projectName=three-tier-backend \
+            -Dsonar.host.url=$SONAR_HOST_URL \
+            -Dsonar.token=$SONAR_TOKEN
+
+      # 5. OWASP Dependency Check
+      - name: OWASP Dependency Check
+        uses: dependency-check/Dependency-Check_Action@main
+        with:
+          project: "three-tier-backend"
+          path: "Application-Code/backend"
+          format: "HTML"
+          out: "reports"
+
+      # 6. Trivy filesystem scan
+      - name: Trivy Filesystem Scan
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: fs
+          scan-ref: Application-Code/backend
+          format: table
+          exit-code: '0'
+
+      # 7. Docker Build
+      - name: Build Docker Image
+        working-directory: Application-Code/backend
+        run: |
+          docker build \
+            -t ${{ env.ECR_REPOSITORY }}:${{ env.IMAGE_TAG }} .
+
+      # 8. Trivy Docker Image Scan
+      - name: Trivy Image Scan
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: '${{ env.ECR_REPOSITORY }}:${{ env.IMAGE_TAG }}'
+          format: table
+          exit-code: '0'
+
+      # 9. AWS Authentication using OIDC
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      # 10. Login to ECR
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      # 11. Tag and Push Image
+      - name: Push Docker Image to ECR
+        env:
+          REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+        run: |
+          docker tag \
+            ${{ env.ECR_REPOSITORY }}:${{ env.IMAGE_TAG }} \
+            $REGISTRY/${{ env.ECR_REPOSITORY }}:${{ env.IMAGE_TAG }}
+
+          docker push \
+            $REGISTRY/${{ env.ECR_REPOSITORY }}:${{ env.IMAGE_TAG }}
+
+      # 12. Update Kubernetes deployment.yaml
+      - name: Update Kubernetes Deployment
+        env:
+          IMAGE_TAG: ${{ env.IMAGE_TAG }}
+        run: |
+          cd Kubernetes-Manifests-file/Backend
+
+          sed -i \
+            "s|\(backend:\)[^ ]*|\1${IMAGE_TAG}|" \
+            deployment.yaml
+
+      # 13. Commit updated deployment
+      - name: Commit Deployment Change
+        run: |
+          git config user.name "github-actions"
+          git config user.email "github-actions@github.com"
+
+          git add Kubernetes-Manifests-file/Backend/deployment.yaml
+
+          git commit \
+            -m "Update backend image to ${{ env.IMAGE_TAG }}" \
+            || echo "No changes to commit"
+
+          git push
