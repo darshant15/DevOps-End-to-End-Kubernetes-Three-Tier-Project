@@ -7,6 +7,7 @@ on:
   pull_request:
     branches:
       - main
+  workflow_dispatch:
 
 env:
   AWS_REGION: us-east-1
@@ -14,9 +15,7 @@ env:
   IMAGE_TAG: ${{ github.sha }}
 
 jobs:
-
   build-scan-push:
-
     runs-on: ubuntu-latest
 
     permissions:
