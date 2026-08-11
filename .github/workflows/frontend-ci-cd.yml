@@ -54,11 +54,11 @@ jobs:
         run: npm ci
 
       # Run tests only when the test script exists
-      - name: Run Frontend Tests
-        working-directory: ${{ env.FRONTEND_DIRECTORY }}
-        env:
-          CI: true
-        run: npm test --if-present -- --watchAll=false
+       - name: Run Frontend Tests
+         working-directory: ${{ env.FRONTEND_DIRECTORY }}
+         env:
+         CI: true
+         run: npm test -- --watchAll=false --passWithNoTests
 
       # Compile the frontend application
       - name: Build Frontend Application
