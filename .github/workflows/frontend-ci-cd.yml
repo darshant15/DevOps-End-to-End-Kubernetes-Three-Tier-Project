@@ -1,5 +1,6 @@
 name: Three-Tier Frontend CI/CD
 
+# Start the workflow when frontend code changes on main
 on:
   push:
     branches:
@@ -8,6 +9,7 @@ on:
       - "Application-Code/frontend/**"
       - ".github/workflows/frontend-cicd.yml"
 
+  # Run CI checks for pull requests targeting main
   pull_request:
     branches:
       - main
@@ -15,13 +17,10 @@ on:
       - "Application-Code/frontend/**"
       - ".github/workflows/frontend-cicd.yml"
 
+  # Allow manual execution from the GitHub Actions page
   workflow_dispatch:
 
-# Cancel an older run when a newer commit starts
-concurrency:
-  group: frontend-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
-
+# Common variables available to all jobs
 env:
   AWS_REGION: us-east-1
   ECR_REPOSITORY: three-tier-frontend
@@ -32,93 +31,21 @@ env:
 jobs:
 
   # ============================================================
-  # STAGE 1: Install, test and build the React application
+  # JOB 1: Install, test, build and scan frontend source code
   # ============================================================
-  build-test:
-    name: 1. Build and Test
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
+  ci:
+    name: Install, Test, SonarQube and Trivy
+    runs-on: self-hosted
 
     steps:
 
-      # Download repository code
-      - name: Checkout Code
-        uses: actions/checkout@v4
-
-      # Configure Node.js and npm caching
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: "24"
-          cache: npm
-          cache-dependency-path: Application-Code/frontend/package-lock.json
-
-      # Display installed versions
-      - name: Display Runtime Versions
-        run: |
-          node --version
-          npm --version
-
-      # Install exact dependency versions
-      - name: Install Frontend Dependencies
-        working-directory: ${{ env.FRONTEND_DIRECTORY }}
-        run: npm ci
-
-      # Run tests if available and pass when no test files exist
-      - name: Run Frontend Tests
-        working-directory: ${{ env.FRONTEND_DIRECTORY }}
-        env:
-          CI: true
-        run: npm test -- --watchAll=false --passWithNoTests
-
-      # Compile the React application
-      - name: Build Frontend Application
-        working-directory: ${{ env.FRONTEND_DIRECTORY }}
-        env:
-          CI: true
-        run: npm run build --if-present
-
-      # Upload the compiled application
-      - name: Upload Frontend Build
-        if: success()
-        uses: actions/upload-artifact@v4
-        with:
-          name: frontend-build-${{ github.sha }}
-          path: |
-            Application-Code/frontend/build
-            Application-Code/frontend/dist
-          if-no-files-found: warn
-          retention-days: 7
-
-      # Add details to GitHub Actions summary
-      - name: Build Summary
-        if: always()
-        run: |
-          {
-            echo "## Frontend Build"
-            echo "- Branch: \`${{ github.ref_name }}\`"
-            echo "- Commit: \`${{ github.sha }}\`"
-            echo "- Node.js: \`24\`"
-            echo "- Result: \`${{ job.status }}\`"
-          } >> "$GITHUB_STEP_SUMMARY"
-
-  # ============================================================
-  # STAGE 2A: SonarQube analysis
-  # ============================================================
-  code-quality:
-    name: 2A. SonarQube Analysis
-    needs: build-test
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-
-    steps:
-
-      # SonarQube needs complete Git history
+      # Download the repository onto the EC2 self-hosted runner
       - name: Checkout Code
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
+      # Install Node.js and enable npm dependency caching
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
@@ -126,23 +53,28 @@ jobs:
           cache: npm
           cache-dependency-path: Application-Code/frontend/package-lock.json
 
-      - name: Install Frontend Dependencies
+      # Install exact dependencies from package-lock.json
+      - name: Install Dependencies
         working-directory: ${{ env.FRONTEND_DIRECTORY }}
         run: npm ci
 
-      # Verify that required SonarQube secrets exist
-      - name: Validate SonarQube Configuration
+      # Run frontend tests once without watch mode
+      # Pass successfully when the project currently has no tests
+      - name: Test Frontend
+        working-directory: ${{ env.FRONTEND_DIRECTORY }}
         env:
-          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
-          SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
-        run: |
-          if [ -z "$SONAR_TOKEN" ] || [ -z "$SONAR_HOST_URL" ]; then
-            echo "::error::SONAR_TOKEN or SONAR_HOST_URL is not configured"
-            exit 1
-          fi
+          CI: true
+        run: npm test -- --watchAll=false --passWithNoTests
 
-      # Analyze the React source code
-      - name: Run SonarQube Analysis
+      # Create the production frontend build
+      - name: Build Frontend
+        working-directory: ${{ env.FRONTEND_DIRECTORY }}
+        env:
+          CI: true
+        run: npm run build --if-present
+
+      # Send frontend source code to SonarQube
+      - name: SonarQube Code Analysis
         working-directory: ${{ env.FRONTEND_DIRECTORY }}
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
@@ -156,49 +88,8 @@ jobs:
             -Dsonar.host.url="$SONAR_HOST_URL" \
             -Dsonar.token="$SONAR_TOKEN"
 
-      - name: SonarQube Summary
-        if: always()
-        run: |
-          {
-            echo "## Frontend Code Quality"
-            echo "- Tool: SonarQube"
-            echo "- Project: \`three-tier-frontend\`"
-            echo "- Result: \`${{ job.status }}\`"
-          } >> "$GITHUB_STEP_SUMMARY"
-
-  # ============================================================
-  # STAGE 2B: Dependency and filesystem security scans
-  # Runs in parallel with SonarQube
-  # ============================================================
-  security-scan:
-    name: 2B. Security Scans
-    needs: build-test
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-
-    steps:
-
-      - name: Checkout Code
-        uses: actions/checkout@v4
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: "24"
-          cache: npm
-          cache-dependency-path: Application-Code/frontend/package-lock.json
-
-      - name: Install Frontend Dependencies
-        working-directory: ${{ env.FRONTEND_DIRECTORY }}
-        run: npm ci
-
-      # Report vulnerabilities without blocking this learning pipeline
-      - name: NPM Dependency Audit
-        working-directory: ${{ env.FRONTEND_DIRECTORY }}
-        continue-on-error: true
-        run: npm audit --audit-level=high
-
-      # Scan frontend files and dependencies
+      # Scan frontend files and dependencies for vulnerabilities
+      # exit-code 0 reports issues without stopping the pipeline
       - name: Trivy Filesystem Scan
         uses: aquasecurity/trivy-action@master
         with:
@@ -209,154 +100,93 @@ jobs:
           ignore-unfixed: true
           exit-code: "0"
 
-      - name: Security Summary
-        if: always()
-        run: |
-          {
-            echo "## Frontend Security Scan"
-            echo "- NPM dependency audit completed"
-            echo "- Trivy filesystem scan completed"
-            echo "- Severity checked: HIGH and CRITICAL"
-            echo "- Result: \`${{ job.status }}\`"
-          } >> "$GITHUB_STEP_SUMMARY"
-
   # ============================================================
-  # STAGE 3: Build, scan and push Docker image to Amazon ECR
-  # Only runs after a push to main
+  # JOB 2: Build the Docker image and push it to Amazon ECR
   # ============================================================
   docker-push:
-    name: 3. Docker Build and ECR Push
-    needs:
-      - code-quality
-      - security-scan
+    name: Build Docker Image and Push to ECR
+    needs: ci
 
+    # Do not create or push images during pull-request checks
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
 
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-
-    permissions:
-      contents: read
-      id-token: write
+    runs-on: self-hosted
 
     outputs:
-      full-image: ${{ steps.image-details.outputs.full-image }}
+      full-image: ${{ steps.image.outputs.full-image }}
 
     steps:
 
+      # Download source code for the Docker build
       - name: Checkout Code
         uses: actions/checkout@v4
 
-      # Verify that the AWS role secret exists
-      - name: Validate AWS Configuration
-        env:
-          AWS_ROLE_ARN: ${{ secrets.AWS_ROLE_ARN }}
-        run: |
-          if [ -z "$AWS_ROLE_ARN" ]; then
-            echo "::error::AWS_ROLE_ARN is not configured"
-            exit 1
-          fi
+      # Confirm the IAM role attached to the EC2 runner is working
+      - name: Check AWS Identity
+        run: aws sts get-caller-identity
 
-      # Authenticate to AWS using GitHub OIDC
-      - name: Configure AWS Credentials
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
-          aws-region: ${{ env.AWS_REGION }}
-
-      # Authenticate Docker with Amazon ECR
+      # Authenticate Docker with ECR through the EC2 IAM role
       - name: Login to Amazon ECR
         id: login-ecr
         uses: aws-actions/amazon-ecr-login@v2
+        with:
+          region: ${{ env.AWS_REGION }}
 
-      # Generate the complete image address
-      - name: Prepare Image Details
-        id: image-details
+      # Create the full Docker image URL
+      # Example: account.dkr.ecr.us-east-1.amazonaws.com/repository:commit-id
+      - name: Set Image Name
+        id: image
         env:
-          REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
         run: |
-          FULL_IMAGE="${REGISTRY}/${ECR_REPOSITORY}:${IMAGE_TAG}"
+          FULL_IMAGE="${ECR_REGISTRY}/${ECR_REPOSITORY}:${IMAGE_TAG}"
 
           echo "FULL_IMAGE=${FULL_IMAGE}" >> "$GITHUB_ENV"
           echo "full-image=${FULL_IMAGE}" >> "$GITHUB_OUTPUT"
 
-          echo "Docker image: ${FULL_IMAGE}"
-
-      # Build using the frontend Dockerfile
+      # Build the image using the frontend Dockerfile
       - name: Build Docker Image
         working-directory: ${{ env.FRONTEND_DIRECTORY }}
         run: docker build --tag "$FULL_IMAGE" .
 
-      # Scan the final container image
-      - name: Trivy Docker Image Scan
-        uses: aquasecurity/trivy-action@master
-        with:
-          image-ref: ${{ env.FULL_IMAGE }}
-          format: table
-          severity: CRITICAL,HIGH
-          ignore-unfixed: true
-          exit-code: "0"
-
-      # Upload the image to Amazon ECR
-      - name: Push Docker Image to ECR
+      # Push the frontend image into Amazon ECR
+      - name: Push Image to Amazon ECR
         run: docker push "$FULL_IMAGE"
 
-      - name: Docker Summary
-        if: always()
-        run: |
-          {
-            echo "## Frontend Docker Image"
-            echo "- Repository: \`${ECR_REPOSITORY}\`"
-            echo "- Image tag: \`${IMAGE_TAG}\`"
-            echo "- Full image: \`${FULL_IMAGE}\`"
-            echo "- Result: \`${{ job.status }}\`"
-          } >> "$GITHUB_STEP_SUMMARY"
-
   # ============================================================
-  # STAGE 4: Update the frontend Kubernetes manifest
+  # JOB 3: Update the Kubernetes deployment image
   # ============================================================
   update-manifest:
-    name: 4. Update Kubernetes Manifest
+    name: Update Kubernetes Deployment YAML
     needs: docker-push
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
+    runs-on: self-hosted
 
+    # Permit the automatic GITHUB_TOKEN to push the YAML change
     permissions:
       contents: write
 
     steps:
 
-      # Checkout the latest main branch
-      - name: Checkout Latest Main Branch
+      # Get the latest main branch before changing the manifest
+      - name: Checkout Main Branch
         uses: actions/checkout@v4
         with:
           ref: main
           fetch-depth: 0
 
-      # Replace the old frontend image
+      # Replace the old image value with the new ECR image
       - name: Update Frontend Image
         env:
           FULL_IMAGE: ${{ needs.docker-push.outputs.full-image }}
         run: |
-          if [ -z "$FULL_IMAGE" ]; then
-            echo "::error::Docker image output is empty"
-            exit 1
-          fi
-
-          if [ ! -f "$MANIFEST_FILE" ]; then
-            echo "::error::Manifest file not found: $MANIFEST_FILE"
-            exit 1
-          fi
-
           sed -i -E \
             "s|(^[[:space:]]*image:[[:space:]]*).*$|\1${FULL_IMAGE}|" \
             "$MANIFEST_FILE"
 
-          echo "Updated frontend image:"
           grep "image:" "$MANIFEST_FILE"
 
-      # Commit only when deployment.yaml changed
-      - name: Commit Deployment Change
+      # Commit only when deployment.yaml has actually changed
+      - name: Commit and Push Manifest
         run: |
           git config user.name "github-actions[bot]"
           git config user.email \
@@ -365,20 +195,9 @@ jobs:
           git add "$MANIFEST_FILE"
 
           if git diff --cached --quiet; then
-            echo "No Kubernetes manifest changes to commit"
+            echo "No manifest change"
           else
             git commit -m "Update frontend image to ${IMAGE_TAG} [skip ci]"
             git pull --rebase origin main
             git push origin main
           fi
-
-      - name: Deployment Summary
-        if: always()
-        run: |
-          {
-            echo "## Frontend Kubernetes Manifest"
-            echo "- File: \`${MANIFEST_FILE}\`"
-            echo "- Image tag: \`${IMAGE_TAG}\`"
-            echo "- Full image: \`${{ needs.docker-push.outputs.full-image }}\`"
-            echo "- Result: \`${{ job.status }}\`"
-          } >> "$GITHUB_STEP_SUMMARY"
