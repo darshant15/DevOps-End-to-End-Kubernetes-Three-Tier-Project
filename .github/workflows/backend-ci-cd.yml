@@ -1,5 +1,6 @@
 name: Three-Tier Backend CI/CD
 
+# Run pipeline when backend code changes on main branch
 on:
   push:
     branches:
@@ -8,6 +9,7 @@ on:
       - "Application-Code/backend/**"
       - ".github/workflows/backend-cicd.yml"
 
+  # Run CI validation for pull requests to main
   pull_request:
     branches:
       - main
@@ -15,13 +17,10 @@ on:
       - "Application-Code/backend/**"
       - ".github/workflows/backend-cicd.yml"
 
+  # Allow pipeline to be started manually
   workflow_dispatch:
 
-# Cancel an older run when a newer commit is pushed
-concurrency:
-  group: backend-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
-
+# Common variables used by all jobs
 env:
   AWS_REGION: us-east-1
   ECR_REPOSITORY: three-tier-backend
@@ -32,89 +31,21 @@ env:
 jobs:
 
   # ============================================================
-  # STAGE 1: Install dependencies, test and build
+  # JOB 1: Install, test, build and scan backend source code
   # ============================================================
-  build-test:
-    name: 1. Build and Test
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
+  ci:
+    name: Install, Test, SonarQube and Trivy
+    runs-on: self-hosted
 
     steps:
 
-      # Download the repository code
-      - name: Checkout Code
-        uses: actions/checkout@v4
-
-      # Install Node.js
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: "24"
-          cache: npm
-          cache-dependency-path: Application-Code/backend/package-lock.json
-
-      # Display installed versions
-      - name: Display Runtime Versions
-        run: |
-          node --version
-          npm --version
-
-      # Install exact versions from package-lock.json
-      - name: Install Backend Dependencies
-        working-directory: ${{ env.BACKEND_DIRECTORY }}
-        run: npm ci
-
-      # Run real tests when configured.
-      # Skip the default "Error: no test specified" placeholder.
-      - name: Run Backend Tests
-        working-directory: ${{ env.BACKEND_DIRECTORY }}
-        shell: bash
-        run: |
-          TEST_SCRIPT=$(node -p "require('./package.json').scripts?.test || ''")
-
-          if [ -z "$TEST_SCRIPT" ]; then
-            echo "No backend test script is configured; skipping tests"
-          elif [[ "$TEST_SCRIPT" == *"no test specified"* ]]; then
-            echo "Only the default placeholder test exists; skipping tests"
-          else
-            echo "Running backend automated tests"
-            npm test
-          fi
-
-      # Run build only if package.json contains a build script
-      - name: Build Backend
-        working-directory: ${{ env.BACKEND_DIRECTORY }}
-        run: npm run build --if-present
-
-      # Add build details to the Summary page
-      - name: Build Summary
-        if: always()
-        run: |
-          {
-            echo "## Backend Build"
-            echo "- Branch: \`${{ github.ref_name }}\`"
-            echo "- Commit: \`${{ github.sha }}\`"
-            echo "- Node.js: \`24\`"
-            echo "- Result: \`${{ job.status }}\`"
-          } >> "$GITHUB_STEP_SUMMARY"
-
-  # ============================================================
-  # STAGE 2A: SonarQube analysis
-  # ============================================================
-  code-quality:
-    name: 2A. SonarQube Analysis
-    needs: build-test
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-
-    steps:
-
-      # Every job receives a new runner
+      # Download repository code into the EC2 runner
       - name: Checkout Code
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
+      # Install Node.js and enable npm dependency caching
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
@@ -122,23 +53,31 @@ jobs:
           cache: npm
           cache-dependency-path: Application-Code/backend/package-lock.json
 
-      - name: Install Backend Dependencies
+      # Install exact dependency versions from package-lock.json
+      - name: Install Dependencies
         working-directory: ${{ env.BACKEND_DIRECTORY }}
         run: npm ci
 
-      # Provide a clear error when SonarQube secrets are missing
-      - name: Validate SonarQube Configuration
-        env:
-          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
-          SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
+      # Run tests only when a real test command is configured
+      - name: Test Backend
+        working-directory: ${{ env.BACKEND_DIRECTORY }}
+        shell: bash
         run: |
-          if [ -z "$SONAR_TOKEN" ] || [ -z "$SONAR_HOST_URL" ]; then
-            echo "::error::SONAR_TOKEN or SONAR_HOST_URL is not configured"
-            exit 1
+          TEST_SCRIPT=$(node -p "require('./package.json').scripts?.test || ''")
+
+          if [ -z "$TEST_SCRIPT" ] || [[ "$TEST_SCRIPT" == *"no test specified"* ]]; then
+            echo "No backend automated tests configured; skipping tests"
+          else
+            npm test
           fi
 
-      # Analyze backend source code
-      - name: Run SonarQube Analysis
+      # Build the backend when package.json contains a build script
+      - name: Build Backend
+        working-directory: ${{ env.BACKEND_DIRECTORY }}
+        run: npm run build --if-present
+
+      # Send source code to SonarQube for quality analysis
+      - name: SonarQube Code Analysis
         working-directory: ${{ env.BACKEND_DIRECTORY }}
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
@@ -152,49 +91,8 @@ jobs:
             -Dsonar.host.url="$SONAR_HOST_URL" \
             -Dsonar.token="$SONAR_TOKEN"
 
-      - name: SonarQube Summary
-        if: always()
-        run: |
-          {
-            echo "## Backend Code Quality"
-            echo "- Tool: SonarQube"
-            echo "- Project: \`three-tier-backend\`"
-            echo "- Result: \`${{ job.status }}\`"
-          } >> "$GITHUB_STEP_SUMMARY"
-
-  # ============================================================
-  # STAGE 2B: Dependency and filesystem security scans
-  # Runs in parallel with SonarQube
-  # ============================================================
-  security-scan:
-    name: 2B. Security Scans
-    needs: build-test
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-
-    steps:
-
-      - name: Checkout Code
-        uses: actions/checkout@v4
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: "24"
-          cache: npm
-          cache-dependency-path: Application-Code/backend/package-lock.json
-
-      - name: Install Backend Dependencies
-        working-directory: ${{ env.BACKEND_DIRECTORY }}
-        run: npm ci
-
-      # Display dependency vulnerabilities without failing this learning pipeline
-      - name: NPM Dependency Audit
-        working-directory: ${{ env.BACKEND_DIRECTORY }}
-        continue-on-error: true
-        run: npm audit --audit-level=high
-
-      # Scan backend files and dependencies
+      # Check backend files and dependencies for vulnerabilities
+      # exit-code 0 reports issues but does not fail the pipeline
       - name: Trivy Filesystem Scan
         uses: aquasecurity/trivy-action@master
         with:
@@ -205,154 +103,93 @@ jobs:
           ignore-unfixed: true
           exit-code: "0"
 
-      - name: Security Summary
-        if: always()
-        run: |
-          {
-            echo "## Backend Security Scan"
-            echo "- NPM dependency audit completed"
-            echo "- Trivy filesystem scan completed"
-            echo "- Severity checked: HIGH and CRITICAL"
-            echo "- Result: \`${{ job.status }}\`"
-          } >> "$GITHUB_STEP_SUMMARY"
-
   # ============================================================
-  # STAGE 3: Build, scan and push Docker image to Amazon ECR
-  # Runs only for a push to main
+  # JOB 2: Build Docker image and push it to Amazon ECR
   # ============================================================
   docker-push:
-    name: 3. Docker Build and ECR Push
-    needs:
-      - code-quality
-      - security-scan
+    name: Build Docker Image and Push to ECR
+    needs: ci
 
+    # Do not push Docker images during pull-request validation
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
 
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-
-    permissions:
-      contents: read
-      id-token: write
+    runs-on: self-hosted
 
     outputs:
-      full-image: ${{ steps.image-details.outputs.full-image }}
+      full-image: ${{ steps.image.outputs.full-image }}
 
     steps:
 
+      # Download the source code for Docker build
       - name: Checkout Code
         uses: actions/checkout@v4
 
-      # Provide a clear error if the AWS role secret is missing
-      - name: Validate AWS Configuration
-        env:
-          AWS_ROLE_ARN: ${{ secrets.AWS_ROLE_ARN }}
-        run: |
-          if [ -z "$AWS_ROLE_ARN" ]; then
-            echo "::error::AWS_ROLE_ARN is not configured"
-            exit 1
-          fi
+      # Confirm that the EC2 instance IAM role is available
+      - name: Check AWS Identity
+        run: aws sts get-caller-identity
 
-      # Authenticate to AWS through GitHub OIDC
-      - name: Configure AWS Credentials
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
-          aws-region: ${{ env.AWS_REGION }}
-
-      # Authenticate Docker with Amazon ECR
+      # Login Docker to ECR using the IAM role attached to EC2
       - name: Login to Amazon ECR
         id: login-ecr
         uses: aws-actions/amazon-ecr-login@v2
+        with:
+          region: ${{ env.AWS_REGION }}
 
-      # Construct the complete ECR image address
-      - name: Prepare Image Details
-        id: image-details
+      # Create the complete ECR image name
+      # Example: account.dkr.ecr.us-east-1.amazonaws.com/repository:commit-id
+      - name: Set Image Name
+        id: image
         env:
-          REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
         run: |
-          FULL_IMAGE="${REGISTRY}/${ECR_REPOSITORY}:${IMAGE_TAG}"
+          FULL_IMAGE="${ECR_REGISTRY}/${ECR_REPOSITORY}:${IMAGE_TAG}"
 
           echo "FULL_IMAGE=${FULL_IMAGE}" >> "$GITHUB_ENV"
           echo "full-image=${FULL_IMAGE}" >> "$GITHUB_OUTPUT"
 
-          echo "Docker image: ${FULL_IMAGE}"
-
-      # Build the backend container
+      # Build the Docker image using the backend Dockerfile
       - name: Build Docker Image
         working-directory: ${{ env.BACKEND_DIRECTORY }}
         run: docker build --tag "$FULL_IMAGE" .
 
-      # Scan the final Docker image
-      - name: Trivy Docker Image Scan
-        uses: aquasecurity/trivy-action@master
-        with:
-          image-ref: ${{ env.FULL_IMAGE }}
-          format: table
-          severity: CRITICAL,HIGH
-          ignore-unfixed: true
-          exit-code: "0"
-
-      # Upload the image to ECR
-      - name: Push Docker Image to ECR
+      # Push the newly built image to Amazon ECR
+      - name: Push Image to Amazon ECR
         run: docker push "$FULL_IMAGE"
 
-      - name: Docker Summary
-        if: always()
-        run: |
-          {
-            echo "## Backend Docker Image"
-            echo "- Repository: \`${ECR_REPOSITORY}\`"
-            echo "- Image tag: \`${IMAGE_TAG}\`"
-            echo "- Full image: \`${FULL_IMAGE}\`"
-            echo "- Result: \`${{ job.status }}\`"
-          } >> "$GITHUB_STEP_SUMMARY"
-
   # ============================================================
-  # STAGE 4: Update Kubernetes deployment manifest
+  # JOB 3: Update the Kubernetes deployment image
   # ============================================================
   update-manifest:
-    name: 4. Update Kubernetes Manifest
+    name: Update Kubernetes Deployment YAML
     needs: docker-push
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
+    runs-on: self-hosted
 
+    # Allow GITHUB_TOKEN to push the manifest change
     permissions:
       contents: write
 
     steps:
 
-      # Get the latest main branch before updating the manifest
-      - name: Checkout Latest Main Branch
+      # Get the latest main branch before modifying the manifest
+      - name: Checkout Main Branch
         uses: actions/checkout@v4
         with:
           ref: main
           fetch-depth: 0
 
-      # Replace the old backend image with the new ECR image
+      # Replace the existing image value with the new ECR image
       - name: Update Backend Image
         env:
           FULL_IMAGE: ${{ needs.docker-push.outputs.full-image }}
         run: |
-          if [ -z "$FULL_IMAGE" ]; then
-            echo "::error::Docker image output is empty"
-            exit 1
-          fi
-
-          if [ ! -f "$MANIFEST_FILE" ]; then
-            echo "::error::Manifest file not found: $MANIFEST_FILE"
-            exit 1
-          fi
-
           sed -i -E \
             "s|(^[[:space:]]*image:[[:space:]]*).*$|\1${FULL_IMAGE}|" \
             "$MANIFEST_FILE"
 
-          echo "Updated Kubernetes image:"
           grep "image:" "$MANIFEST_FILE"
 
-      # Commit only if deployment.yaml changed
-      - name: Commit Deployment Change
+      # Commit and push only when the manifest actually changed
+      - name: Commit and Push Manifest
         run: |
           git config user.name "github-actions[bot]"
           git config user.email \
@@ -361,20 +198,9 @@ jobs:
           git add "$MANIFEST_FILE"
 
           if git diff --cached --quiet; then
-            echo "No Kubernetes manifest changes to commit"
+            echo "No manifest change"
           else
             git commit -m "Update backend image to ${IMAGE_TAG} [skip ci]"
             git pull --rebase origin main
             git push origin main
           fi
-
-      - name: Deployment Summary
-        if: always()
-        run: |
-          {
-            echo "## Backend Kubernetes Manifest"
-            echo "- File: \`${MANIFEST_FILE}\`"
-            echo "- Image tag: \`${IMAGE_TAG}\`"
-            echo "- Full image: \`${{ needs.docker-push.outputs.full-image }}\`"
-            echo "- Result: \`${{ job.status }}\`"
-          } >> "$GITHUB_STEP_SUMMARY"
