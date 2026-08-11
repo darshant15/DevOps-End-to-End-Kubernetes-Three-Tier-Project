@@ -4,134 +4,324 @@ on:
   push:
     branches:
       - main
+    paths-ignore:
+      - "Kubernetes-Manifests-file/**"
+
   pull_request:
     branches:
       - main
+
   workflow_dispatch:
+
+# Cancel an older run when a newer commit starts
+concurrency:
+  group: frontend-${{ github.ref }}
+  cancel-in-progress: true
 
 env:
   AWS_REGION: us-east-1
   ECR_REPOSITORY: three-tier-frontend
   IMAGE_TAG: ${{ github.sha }}
+  FRONTEND_DIRECTORY: Application-Code/frontend
+  MANIFEST_FILE: Kubernetes-Manifests-file/Frontend/deployment.yaml
 
 jobs:
-  build-scan-push:
-    runs-on: ubuntu-latest
 
-    permissions:
-      contents: write
-      id-token: write
+  # ============================================================
+  # STAGE 1: Install, test and build the React application
+  # ============================================================
+  build-test:
+    name: 1. Build and Test
+    runs-on: ubuntu-latest
 
     steps:
 
-      # 1. Checkout code
+      # Download repository code
       - name: Checkout Code
         uses: actions/checkout@v4
 
-      # 2. Setup Node.js
+      # Configure Node.js and npm dependency caching
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: "24"
           cache: npm
           cache-dependency-path: Application-Code/frontend/package-lock.json
 
-      # 3. Install dependencies
-      - name: Install Dependencies
-        working-directory: Application-Code/frontend
+      # Install exact dependency versions from package-lock.json
+      - name: Install Frontend Dependencies
+        working-directory: ${{ env.FRONTEND_DIRECTORY }}
         run: npm ci
 
-      # 4. SonarQube Analysis
+      # Run tests only when the test script exists
+      - name: Run Frontend Tests
+        working-directory: ${{ env.FRONTEND_DIRECTORY }}
+        env:
+          CI: true
+        run: npm test --if-present -- --watchAll=false
+
+      # Compile the frontend application
+      - name: Build Frontend Application
+        working-directory: ${{ env.FRONTEND_DIRECTORY }}
+        run: npm run build --if-present
+
+      # Save the compiled frontend for later inspection
+      - name: Upload Frontend Build
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: frontend-build-${{ github.sha }}
+          path: |
+            Application-Code/frontend/build
+            Application-Code/frontend/dist
+          if-no-files-found: warn
+          retention-days: 7
+
+      # Display useful information in the workflow summary
+      - name: Build Summary
+        if: always()
+        run: |
+          {
+            echo "## Frontend Build"
+            echo "- Branch: \`${{ github.ref_name }}\`"
+            echo "- Commit: \`${{ github.sha }}\`"
+            echo "- Node.js: \`24\`"
+            echo "- Result: \`${{ job.status }}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # ============================================================
+  # STAGE 2A: SonarQube analysis
+  # ============================================================
+  code-quality:
+    name: 2A. SonarQube Analysis
+    needs: build-test
+    runs-on: ubuntu-latest
+
+    steps:
+
+      # SonarQube needs the complete Git history
+      - name: Checkout Code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: Application-Code/frontend/package-lock.json
+
+      - name: Install Frontend Dependencies
+        working-directory: ${{ env.FRONTEND_DIRECTORY }}
+        run: npm ci
+
+      # Analyze the React source code
       - name: SonarQube Analysis
-        working-directory: Application-Code/frontend
+        working-directory: ${{ env.FRONTEND_DIRECTORY }}
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
           SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
         run: |
-          npx sonar-scanner \
+          npx --yes sonar-scanner \
             -Dsonar.projectKey=three-tier-frontend \
             -Dsonar.projectName=three-tier-frontend \
-            -Dsonar.host.url=$SONAR_HOST_URL \
-            -Dsonar.token=$SONAR_TOKEN
+            -Dsonar.sources=src \
+            -Dsonar.exclusions="node_modules/**,build/**,dist/**,coverage/**" \
+            -Dsonar.host.url="$SONAR_HOST_URL" \
+            -Dsonar.token="$SONAR_TOKEN"
 
-      # 5. OWASP Dependency Check
-      - name: OWASP Dependency Check
-        uses: dependency-check/Dependency-Check_Action@main
+      - name: SonarQube Summary
+        if: always()
+        run: |
+          {
+            echo "## Frontend Code Quality"
+            echo "- Project: \`three-tier-frontend\`"
+            echo "- Result: \`${{ job.status }}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # ============================================================
+  # STAGE 2B: Dependency and filesystem security scans
+  # Runs in parallel with SonarQube
+  # ============================================================
+  security-scan:
+    name: 2B. Security Scans
+    needs: build-test
+    runs-on: ubuntu-latest
+
+    steps:
+
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
         with:
-          project: "three-tier-frontend"
-          path: "Application-Code/frontend"
-          format: "HTML"
-          out: "reports"
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: Application-Code/frontend/package-lock.json
 
-      # 6. Trivy filesystem scan
+      - name: Install Frontend Dependencies
+        working-directory: ${{ env.FRONTEND_DIRECTORY }}
+        run: npm ci
+
+      # Show dependency vulnerabilities without blocking initially
+      - name: NPM Dependency Audit
+        working-directory: ${{ env.FRONTEND_DIRECTORY }}
+        continue-on-error: true
+        run: npm audit --audit-level=high
+
+      # Scan source files, package-lock.json and dependencies
       - name: Trivy Filesystem Scan
         uses: aquasecurity/trivy-action@master
         with:
           scan-type: fs
           scan-ref: Application-Code/frontend
           format: table
-          exit-code: '0'
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          exit-code: "0"
 
-      # 7. Build Docker image
-      - name: Build Docker Image
-        working-directory: Application-Code/frontend
+      - name: Security Summary
+        if: always()
         run: |
-          docker build \
-            -t ${{ env.ECR_REPOSITORY }}:${{ env.IMAGE_TAG }} .
+          {
+            echo "## Frontend Security"
+            echo "- NPM audit completed"
+            echo "- Trivy filesystem scan completed"
+            echo "- Severity checked: HIGH and CRITICAL"
+          } >> "$GITHUB_STEP_SUMMARY"
 
-      # 8. Trivy Docker image scan
-      - name: Trivy Image Scan
-        uses: aquasecurity/trivy-action@master
-        with:
-          image-ref: '${{ env.ECR_REPOSITORY }}:${{ env.IMAGE_TAG }}'
-          format: table
-          exit-code: '0'
+  # ============================================================
+  # STAGE 3: Build Docker image, scan and push to ECR
+  # Only runs for a push to main—not for pull requests
+  # ============================================================
+  docker-push:
+    name: 3. Docker Build and ECR Push
+    needs:
+      - code-quality
+      - security-scan
 
-      # 9. AWS authentication using OIDC
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: read
+      id-token: write
+
+    outputs:
+      full-image: ${{ steps.image-details.outputs.full-image }}
+
+    steps:
+
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      # Authenticate to AWS using GitHub OIDC
       - name: Configure AWS Credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
 
-      # 10. Login to Amazon ECR
       - name: Login to Amazon ECR
         id: login-ecr
         uses: aws-actions/amazon-ecr-login@v2
 
-      # 11. Push Docker image to ECR
-      - name: Push Docker Image to ECR
+      # Generate complete image name
+      - name: Prepare Image Details
+        id: image-details
         env:
           REGISTRY: ${{ steps.login-ecr.outputs.registry }}
         run: |
-          docker tag \
-            ${{ env.ECR_REPOSITORY }}:${{ env.IMAGE_TAG }} \
-            $REGISTRY/${{ env.ECR_REPOSITORY }}:${{ env.IMAGE_TAG }}
+          FULL_IMAGE="${REGISTRY}/${ECR_REPOSITORY}:${IMAGE_TAG}"
 
-          docker push \
-            $REGISTRY/${{ env.ECR_REPOSITORY }}:${{ env.IMAGE_TAG }}
+          echo "FULL_IMAGE=${FULL_IMAGE}" >> "$GITHUB_ENV"
+          echo "full-image=${FULL_IMAGE}" >> "$GITHUB_OUTPUT"
 
-      # 12. Update frontend Kubernetes deployment
-      - name: Update Kubernetes Deployment
-        env:
-          IMAGE_TAG: ${{ env.IMAGE_TAG }}
+      # Build using the frontend Dockerfile
+      - name: Build Docker Image
+        working-directory: ${{ env.FRONTEND_DIRECTORY }}
+        run: docker build -t "$FULL_IMAGE" .
+
+      # Scan the final container image
+      - name: Trivy Docker Image Scan
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: ${{ env.FULL_IMAGE }}
+          format: table
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          exit-code: "0"
+
+      # Upload the image to Amazon ECR
+      - name: Push Docker Image to ECR
+        run: docker push "$FULL_IMAGE"
+
+      - name: Docker Summary
         run: |
-          cd Kubernetes-Manifests-file/Frontend
+          {
+            echo "## Frontend Docker Image"
+            echo "- Repository: \`${ECR_REPOSITORY}\`"
+            echo "- Image tag: \`${IMAGE_TAG}\`"
+            echo "- Full image: \`${FULL_IMAGE}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
 
-          sed -i \
-            "s|\(frontend:\)[^ ]*|\1${IMAGE_TAG}|" \
-            deployment.yaml
+  # ============================================================
+  # STAGE 4: Update the frontend Kubernetes manifest
+  # ============================================================
+  update-manifest:
+    name: 4. Update Kubernetes Manifest
+    needs: docker-push
+    runs-on: ubuntu-latest
 
-      # 13. Commit deployment change
+    permissions:
+      contents: write
+
+    steps:
+
+      # Checkout the latest main branch before changing the manifest
+      - name: Checkout Code
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      # Replace the old frontend image with the new ECR image
+      - name: Update Frontend Image
+        env:
+          FULL_IMAGE: ${{ needs.docker-push.outputs.full-image }}
+        run: |
+          sed -i -E \
+            "s|(^[[:space:]]*image:[[:space:]]*).*$|\1${FULL_IMAGE}|" \
+            "$MANIFEST_FILE"
+
+          echo "Updated frontend image:"
+          grep "image:" "$MANIFEST_FILE"
+
+      # Commit only when deployment.yaml changed
       - name: Commit Deployment Change
         run: |
-          git config user.name "github-actions"
-          git config user.email "github-actions@github.com"
+          git config user.name "github-actions[bot]"
+          git config user.email \
+            "41898282+github-actions[bot]@users.noreply.github.com"
 
-          git add Kubernetes-Manifests-file/Frontend/deployment.yaml
+          git add "$MANIFEST_FILE"
 
-          git commit \
-            -m "Update frontend image to ${{ env.IMAGE_TAG }}" \
-            || echo "No changes to commit"
+          if git diff --cached --quiet; then
+            echo "No manifest changes to commit"
+          else
+            git commit -m "Update frontend image to ${IMAGE_TAG}"
+            git pull --rebase origin main
+            git push origin main
+          fi
 
-          git push
+      - name: Deployment Summary
+        run: |
+          {
+            echo "## Frontend Kubernetes Manifest"
+            echo "- File: \`${MANIFEST_FILE}\`"
+            echo "- Image tag: \`${IMAGE_TAG}\`"
+            echo "- Manifest update completed"
+          } >> "$GITHUB_STEP_SUMMARY"
