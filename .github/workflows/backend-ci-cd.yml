@@ -3,10 +3,10 @@ name: Three-Tier Backend CI/CD
 on:
   push:
     branches:
-      - master
+      - main
   pull_request:
     branches:
-      - master
+      - main
 
 env:
   AWS_REGION: us-east-1
