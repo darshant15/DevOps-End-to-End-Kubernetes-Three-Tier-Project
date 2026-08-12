@@ -5,8 +5,9 @@ concurrency:
   group: backend-cicd-${{ github.ref }}
   cancel-in-progress: true
 
-# Trigger the pipeline when backend code or this workflow changes
+# Pipeline triggers
 on:
+  # Run when backend code or this workflow changes on main
   push:
     branches:
       - main
@@ -24,6 +25,10 @@ on:
 
   # Allow manual pipeline execution
   workflow_dispatch:
+
+# Default permission for jobs
+permissions:
+  contents: read
 
 # Common environment variables
 env:
@@ -45,13 +50,13 @@ jobs:
 
     steps:
 
-      # Download the repository code
+      # Download repository code
       - name: Checkout Code
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      # Install Node.js and enable npm dependency caching
+      # Install Node.js and enable npm caching
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
@@ -64,7 +69,7 @@ jobs:
         working-directory: ${{ env.BACKEND_DIRECTORY }}
         run: npm ci
 
-      # Run tests only when a valid test command exists
+      # Run tests only when a valid test command is configured
       - name: Test Backend
         working-directory: ${{ env.BACKEND_DIRECTORY }}
         shell: bash
@@ -79,23 +84,38 @@ jobs:
             npm test
           fi
 
-      # Run the build command only when it exists
+      # Run build only when package.json contains a build script
       - name: Build Backend
         working-directory: ${{ env.BACKEND_DIRECTORY }}
         run: npm run build --if-present
 
-      # Verify SonarQube connectivity and analyze the backend
+      # Verify SonarQube connectivity and analyze backend code
       - name: SonarQube Code Analysis
         working-directory: ${{ env.BACKEND_DIRECTORY }}
+        shell: bash
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
           SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
-        shell: bash
         run: |
           set -euo pipefail
 
+          if [ -z "${SONAR_HOST_URL:-}" ]; then
+            echo "ERROR: SONAR_HOST_URL secret is missing"
+            exit 1
+          fi
+
+          if [ -z "${SONAR_TOKEN:-}" ]; then
+            echo "ERROR: SONAR_TOKEN secret is missing"
+            exit 1
+          fi
+
+          echo "Checking SonarQube server..."
+
           curl --fail --silent --show-error \
             "${SONAR_HOST_URL}/api/system/status"
+
+          echo
+          echo "Starting SonarQube analysis..."
 
           npx --yes sonar-scanner \
             -Dsonar.projectKey=three-tier-backend \
@@ -103,12 +123,12 @@ jobs:
             -Dsonar.sources=. \
             -Dsonar.exclusions="node_modules/**,coverage/**" \
             -Dsonar.host.url="${SONAR_HOST_URL}" \
-            -Dsonar.token="${SONAR_TOKEN}"
+            -Dsonar.login="${SONAR_TOKEN}"
 
-      # Scan source files and dependencies for vulnerabilities
+      # Scan backend files and dependencies for vulnerabilities
       # exit-code 0 reports vulnerabilities without failing the job
       - name: Trivy Filesystem Scan
-        uses: aquasecurity/trivy-action@master
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           scan-type: fs
           scan-ref: Application-Code/backend
@@ -126,15 +146,17 @@ jobs:
     needs: ci
     runs-on: self-hosted
 
-    # Do not push an image during pull-request validation
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    # Do not build or push an image during pull-request validation
+    if: >-
+      github.event_name != 'pull_request' &&
+      github.ref == 'refs/heads/main'
 
     outputs:
       full-image: ${{ steps.image.outputs.full-image }}
 
     steps:
 
-      # Download the repository code for the Docker build
+      # Download repository code for the Docker build
       - name: Checkout Code
         uses: actions/checkout@v4
 
@@ -145,16 +167,16 @@ jobs:
       # Authenticate Docker with Amazon ECR
       - name: Login to Amazon ECR
         id: login-ecr
-        uses: aws-actions/amazon-ecr-login@v2
+        uses: aws-actions/amazon-ecr-login@v2.1.1
         with:
           region: ${{ env.AWS_REGION }}
 
-      # Create the complete Docker image name
+      # Create the complete ECR image name
       - name: Set Image Name
         id: image
+        shell: bash
         env:
           ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
-        shell: bash
         run: |
           set -euo pipefail
 
@@ -172,7 +194,7 @@ jobs:
 
       # Scan the built Docker image
       - name: Trivy Docker Image Scan
-        uses: aquasecurity/trivy-action@master
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           image-ref: ${{ steps.image.outputs.full-image }}
           format: table
@@ -193,29 +215,43 @@ jobs:
     needs: docker-push
     runs-on: self-hosted
 
-    # Allow GITHUB_TOKEN to push the manifest change
+    # Allow this job to push the manifest commit
     permissions:
       contents: write
 
     steps:
 
-      # Get the latest main branch
+      # Checkout the latest main branch
       - name: Checkout Main Branch
         uses: actions/checkout@v4
         with:
           ref: main
           fetch-depth: 0
 
-      # Replace the existing Kubernetes image
+      # Make sure the local branch is up to date
+      - name: Pull Latest Main Branch
+        run: git pull --ff-only origin main
+
+      # Replace the first image entry in the deployment manifest
       - name: Update Backend Image
+        shell: bash
         env:
           FULL_IMAGE: ${{ needs.docker-push.outputs.full-image }}
-        shell: bash
         run: |
           set -euo pipefail
 
+          if [ -z "${FULL_IMAGE:-}" ]; then
+            echo "ERROR: Docker image output is empty"
+            exit 1
+          fi
+
+          if [ ! -f "$MANIFEST_FILE" ]; then
+            echo "ERROR: Manifest file not found: $MANIFEST_FILE"
+            exit 1
+          fi
+
           sed -i -E \
-            "s|(^[[:space:]]*image:[[:space:]]*).*$|\1${FULL_IMAGE}|" \
+            "0,/^[[:space:]]*image:[[:space:]]*/s|(^[[:space:]]*image:[[:space:]]*).*$|\1${FULL_IMAGE}|" \
             "$MANIFEST_FILE"
 
           echo "Updated Kubernetes image:"
@@ -237,6 +273,5 @@ jobs:
             echo "No manifest change detected"
           else
             git commit -m "Update backend image to ${IMAGE_TAG} [skip ci]"
-            git pull --rebase origin main
             git push origin main
           fi
