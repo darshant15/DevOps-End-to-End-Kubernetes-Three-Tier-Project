@@ -1,6 +1,11 @@
 name: Three-Tier Backend CI/CD
 
-# Run pipeline when backend code changes on main branch
+# Run only one backend pipeline per branch at a time
+concurrency:
+  group: backend-cicd-${{ github.ref }}
+  cancel-in-progress: true
+
+# Trigger the pipeline when backend code or this workflow changes
 on:
   push:
     branches:
@@ -9,7 +14,7 @@ on:
       - "Application-Code/backend/**"
       - ".github/workflows/backend-cicd.yml"
 
-  # Run CI validation for pull requests to main
+  # Run CI validation for pull requests targeting main
   pull_request:
     branches:
       - main
@@ -17,10 +22,10 @@ on:
       - "Application-Code/backend/**"
       - ".github/workflows/backend-cicd.yml"
 
-  # Allow pipeline to be started manually
+  # Allow manual pipeline execution
   workflow_dispatch:
 
-# Common variables used by all jobs
+# Common environment variables
 env:
   AWS_REGION: us-east-1
   ECR_REPOSITORY: three-tier-backend
@@ -33,13 +38,14 @@ jobs:
   # ============================================================
   # JOB 1: Install, test, build and scan backend source code
   # ============================================================
+
   ci:
     name: Install, Test, SonarQube and Trivy
     runs-on: self-hosted
 
     steps:
 
-      # Download repository code into the EC2 runner
+      # Download the repository code
       - name: Checkout Code
         uses: actions/checkout@v4
         with:
@@ -53,16 +59,18 @@ jobs:
           cache: npm
           cache-dependency-path: Application-Code/backend/package-lock.json
 
-      # Install exact dependency versions from package-lock.json
+      # Install exact dependency versions
       - name: Install Dependencies
         working-directory: ${{ env.BACKEND_DIRECTORY }}
         run: npm ci
 
-      # Run tests only when a real test command is configured
+      # Run tests only when a valid test command exists
       - name: Test Backend
         working-directory: ${{ env.BACKEND_DIRECTORY }}
         shell: bash
         run: |
+          set -euo pipefail
+
           TEST_SCRIPT=$(node -p "require('./package.json').scripts?.test || ''")
 
           if [ -z "$TEST_SCRIPT" ] || [[ "$TEST_SCRIPT" == *"no test specified"* ]]; then
@@ -71,28 +79,34 @@ jobs:
             npm test
           fi
 
-      # Build the backend when package.json contains a build script
+      # Run the build command only when it exists
       - name: Build Backend
         working-directory: ${{ env.BACKEND_DIRECTORY }}
         run: npm run build --if-present
 
-      # Send source code to SonarQube for quality analysis
+      # Verify SonarQube connectivity and analyze the backend
       - name: SonarQube Code Analysis
         working-directory: ${{ env.BACKEND_DIRECTORY }}
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
           SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
+        shell: bash
         run: |
+          set -euo pipefail
+
+          curl --fail --silent --show-error \
+            "${SONAR_HOST_URL}/api/system/status"
+
           npx --yes sonar-scanner \
             -Dsonar.projectKey=three-tier-backend \
             -Dsonar.projectName=three-tier-backend \
             -Dsonar.sources=. \
             -Dsonar.exclusions="node_modules/**,coverage/**" \
-            -Dsonar.host.url="$SONAR_HOST_URL" \
-            -Dsonar.token="$SONAR_TOKEN"
+            -Dsonar.host.url="${SONAR_HOST_URL}" \
+            -Dsonar.token="${SONAR_TOKEN}"
 
-      # Check backend files and dependencies for vulnerabilities
-      # exit-code 0 reports issues but does not fail the pipeline
+      # Scan source files and dependencies for vulnerabilities
+      # exit-code 0 reports vulnerabilities without failing the job
       - name: Trivy Filesystem Scan
         uses: aquasecurity/trivy-action@master
         with:
@@ -106,59 +120,74 @@ jobs:
   # ============================================================
   # JOB 2: Build Docker image and push it to Amazon ECR
   # ============================================================
+
   docker-push:
     name: Build Docker Image and Push to ECR
     needs: ci
-
-    # Do not push Docker images during pull-request validation
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-
     runs-on: self-hosted
+
+    # Do not push an image during pull-request validation
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
 
     outputs:
       full-image: ${{ steps.image.outputs.full-image }}
 
     steps:
 
-      # Download the source code for Docker build
+      # Download the repository code for the Docker build
       - name: Checkout Code
         uses: actions/checkout@v4
 
-      # Confirm that the EC2 instance IAM role is available
+      # Verify the IAM role attached to the EC2 runner
       - name: Check AWS Identity
         run: aws sts get-caller-identity
 
-      # Login Docker to ECR using the IAM role attached to EC2
+      # Authenticate Docker with Amazon ECR
       - name: Login to Amazon ECR
         id: login-ecr
         uses: aws-actions/amazon-ecr-login@v2
         with:
           region: ${{ env.AWS_REGION }}
 
-      # Create the complete ECR image name
-      # Example: account.dkr.ecr.us-east-1.amazonaws.com/repository:commit-id
+      # Create the complete Docker image name
       - name: Set Image Name
         id: image
         env:
           ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+        shell: bash
         run: |
+          set -euo pipefail
+
           FULL_IMAGE="${ECR_REGISTRY}/${ECR_REPOSITORY}:${IMAGE_TAG}"
 
           echo "FULL_IMAGE=${FULL_IMAGE}" >> "$GITHUB_ENV"
           echo "full-image=${FULL_IMAGE}" >> "$GITHUB_OUTPUT"
 
-      # Build the Docker image using the backend Dockerfile
+          echo "Docker image: ${FULL_IMAGE}"
+
+      # Build the backend Docker image
       - name: Build Docker Image
         working-directory: ${{ env.BACKEND_DIRECTORY }}
         run: docker build --tag "$FULL_IMAGE" .
 
-      # Push the newly built image to Amazon ECR
+      # Scan the built Docker image
+      - name: Trivy Docker Image Scan
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: ${{ steps.image.outputs.full-image }}
+          format: table
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          exit-code: "0"
+
+      # Push the Docker image to Amazon ECR
       - name: Push Image to Amazon ECR
         run: docker push "$FULL_IMAGE"
 
   # ============================================================
   # JOB 3: Update the Kubernetes deployment image
   # ============================================================
+
   update-manifest:
     name: Update Kubernetes Deployment YAML
     needs: docker-push
@@ -170,27 +199,34 @@ jobs:
 
     steps:
 
-      # Get the latest main branch before modifying the manifest
+      # Get the latest main branch
       - name: Checkout Main Branch
         uses: actions/checkout@v4
         with:
           ref: main
           fetch-depth: 0
 
-      # Replace the existing image value with the new ECR image
+      # Replace the existing Kubernetes image
       - name: Update Backend Image
         env:
           FULL_IMAGE: ${{ needs.docker-push.outputs.full-image }}
+        shell: bash
         run: |
+          set -euo pipefail
+
           sed -i -E \
             "s|(^[[:space:]]*image:[[:space:]]*).*$|\1${FULL_IMAGE}|" \
             "$MANIFEST_FILE"
 
+          echo "Updated Kubernetes image:"
           grep "image:" "$MANIFEST_FILE"
 
-      # Commit and push only when the manifest actually changed
+      # Commit and push only when the manifest changed
       - name: Commit and Push Manifest
+        shell: bash
         run: |
+          set -euo pipefail
+
           git config user.name "github-actions[bot]"
           git config user.email \
             "41898282+github-actions[bot]@users.noreply.github.com"
@@ -198,7 +234,7 @@ jobs:
           git add "$MANIFEST_FILE"
 
           if git diff --cached --quiet; then
-            echo "No manifest change"
+            echo "No manifest change detected"
           else
             git commit -m "Update backend image to ${IMAGE_TAG} [skip ci]"
             git pull --rebase origin main
