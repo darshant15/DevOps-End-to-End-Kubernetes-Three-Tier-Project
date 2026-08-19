@@ -1,13 +1,17 @@
 name: Three-Tier Backend CI/CD
 
 # Run only one backend pipeline per branch at a time
+
 concurrency:
   group: backend-cicd-${{ github.ref }}
   cancel-in-progress: true
 
 # Pipeline triggers
+
 on:
+
   # Run when backend code or this workflow changes on main
+
   push:
     branches:
       - main
@@ -16,6 +20,7 @@ on:
       - ".github/workflows/backend-cicd.yml"
 
   # Run CI validation for pull requests targeting main
+
   pull_request:
     branches:
       - main
@@ -24,13 +29,16 @@ on:
       - ".github/workflows/backend-cicd.yml"
 
   # Allow manual pipeline execution
+
   workflow_dispatch:
 
 # Default permission for jobs
+
 permissions:
   contents: read
 
 # Common environment variables
+
 env:
   AWS_REGION: us-east-1
   ECR_REPOSITORY: three-tier-backend
@@ -41,12 +49,14 @@ env:
 jobs:
 
   # ============================================================
+
   # JOB 1: Install, test, build and scan backend source code
+
   # ============================================================
 
   ci:
     name: Install, Test, SonarQube and Trivy
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
 
     steps:
 
@@ -138,13 +148,15 @@ jobs:
           exit-code: "0"
 
   # ============================================================
+
   # JOB 2: Build Docker image and push it to Amazon ECR
+
   # ============================================================
 
   docker-push:
     name: Build Docker Image and Push to ECR
     needs: ci
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
 
     # Do not build or push an image during pull-request validation
     if: >-
@@ -207,13 +219,15 @@ jobs:
         run: docker push "$FULL_IMAGE"
 
   # ============================================================
+
   # JOB 3: Update the Kubernetes deployment image
+
   # ============================================================
 
   update-manifest:
     name: Update Kubernetes Deployment YAML
     needs: docker-push
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
 
     # Allow this job to push the manifest commit
     permissions:
